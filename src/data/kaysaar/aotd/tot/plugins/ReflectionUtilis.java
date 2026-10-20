@@ -13,6 +13,7 @@ import java.lang.invoke.MethodType;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class ReflectionUtilis {
     // Code taken and modified from Grand Colonies
@@ -892,27 +893,46 @@ public class ReflectionUtilis {
         return null;
     }
 
+    private static final Object NO_FIELD = new Object();
+    private static final ConcurrentHashMap<Class<?>, ConcurrentHashMap<String, Object>> fieldCache = new ConcurrentHashMap<>();
+
+    private static Object findCachedField(Class<?> type, String fieldName) throws Throwable {
+        if (fieldName == null) return findField(type, null);
+        ConcurrentHashMap<String, Object> fields = fieldCache.computeIfAbsent(type, k -> new ConcurrentHashMap<>());
+        Object field = fields.get(fieldName);
+        if (field == null) {
+            field = findField(type, fieldName);
+            fields.put(fieldName, field);
+        }
+        return field;
+    }
+
+    private static Object findField(Class<?> type, String fieldName) throws Throwable {
+        Class<?> instances = type;
+        while (instances != null) {
+            for (Object obj : instances.getDeclaredFields()) {
+                setFieldAccessibleHandle.invoke(obj, true);
+                String name = (String) getFieldNameHandle.invoke(obj);
+                if (name.equals(fieldName)) {
+                    return obj;
+                }
+            }
+            for (Object obj : instances.getFields()) {
+                setFieldAccessibleHandle.invoke(obj, true);
+                String name = (String) getFieldNameHandle.invoke(obj);
+                if (name.equals(fieldName)) {
+                    return obj;
+                }
+            }
+            instances = instances.getSuperclass();
+        }
+        return NO_FIELD;
+    }
+
     public static Object getPrivateVariable(String fieldName, Object instanceToGetFrom) {
         try {
-            Class<?> instances = instanceToGetFrom.getClass();
-            while (instances != null) {
-                for (Object obj : instances.getDeclaredFields()) {
-                    setFieldAccessibleHandle.invoke(obj, true);
-                    String name = (String) getFieldNameHandle.invoke(obj);
-                    if (name.equals(fieldName)) {
-                        return getFieldHandle.invoke(obj, instanceToGetFrom);
-                    }
-                }
-                for (Object obj : instances.getFields()) {
-                    setFieldAccessibleHandle.invoke(obj, true);
-                    String name = (String) getFieldNameHandle.invoke(obj);
-                    if (name.equals(fieldName)) {
-                        return getFieldHandle.invoke(obj, instanceToGetFrom);
-                    }
-                }
-                instances = instances.getSuperclass();
-            }
-            return null;
+            Object field = findCachedField(instanceToGetFrom.getClass(), fieldName);
+            return field == NO_FIELD ? null : getFieldHandle.invoke(field, instanceToGetFrom);
         } catch (Throwable e) {
             return null;
         }
@@ -1046,25 +1066,8 @@ public class ReflectionUtilis {
 
     public static Object getPrivateVariableFromSuperClass(String fieldName, Object instanceToGetFrom) {
         try {
-            Class<?> instances = instanceToGetFrom.getClass();
-            while (instances != null) {
-                for (Object obj : instances.getDeclaredFields()) {
-                    setFieldAccessibleHandle.invoke(obj, true);
-                    String name = (String) getFieldNameHandle.invoke(obj);
-                    if (name.equals(fieldName)) {
-                        return getFieldHandle.invoke(obj, instanceToGetFrom);
-                    }
-                }
-                for (Object obj : instances.getFields()) {
-                    setFieldAccessibleHandle.invoke(obj, true);
-                    String name = (String) getFieldNameHandle.invoke(obj);
-                    if (name.equals(fieldName)) {
-                        return getFieldHandle.invoke(obj, instanceToGetFrom);
-                    }
-                }
-                instances = instances.getSuperclass();
-            }
-            return null;
+            Object field = findCachedField(instanceToGetFrom.getClass(), fieldName);
+            return field == NO_FIELD ? null : getFieldHandle.invoke(field, instanceToGetFrom);
         } catch (Throwable e) {
             throw new RuntimeException(e);
         }
@@ -1072,26 +1075,8 @@ public class ReflectionUtilis {
 
     public static void setPrivateVariableFromSuperclass(String fieldName, Object instanceToModify, Object newValue) {
         try {
-            Class<?> instances = instanceToModify.getClass();
-            while (instances != null) {
-                for (Object obj : instances.getDeclaredFields()) {
-                    setFieldAccessibleHandle.invoke(obj, true);
-                    String name = (String) getFieldNameHandle.invoke(obj);
-                    if (name.equals(fieldName)) {
-                        setFieldHandle.invoke(obj, instanceToModify, newValue);
-                        return;
-                    }
-                }
-                for (Object obj : instances.getFields()) {
-                    setFieldAccessibleHandle.invoke(obj, true);
-                    String name = (String) getFieldNameHandle.invoke(obj);
-                    if (name.equals(fieldName)) {
-                        setFieldHandle.invoke(obj, instanceToModify, newValue);
-                        return;
-                    }
-                }
-                instances = instances.getSuperclass();
-            }
+            Object field = findCachedField(instanceToModify.getClass(), fieldName);
+            if (field != NO_FIELD) setFieldHandle.invoke(field, instanceToModify, newValue);
         } catch (Throwable e) {
             throw new RuntimeException(e);
         }

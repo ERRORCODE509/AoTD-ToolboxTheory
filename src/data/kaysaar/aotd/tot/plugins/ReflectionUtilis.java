@@ -1278,7 +1278,78 @@ public class ReflectionUtilis {
      */
     private static ResolvedMethod resolveBestMethod(Class<?> startClass, String methodName, boolean requireStatic, Object... arguments) {
         if (arguments == null) arguments = new Object[0];
+        if (startClass == null || methodName == null) return scanForBestMethod(startClass, methodName, requireStatic, arguments);
 
+        ConcurrentHashMap<String, MethodCandidate[]> byName = (requireStatic ? staticMethodCandidateCache : methodCandidateCache)
+                .computeIfAbsent(startClass, k -> new ConcurrentHashMap<>());
+        MethodCandidate[] candidates = byName.get(methodName);
+        if (candidates == null) {
+            try {
+                candidates = findMethodCandidates(startClass, methodName, requireStatic);
+            } catch (Throwable e) {
+                return scanForBestMethod(startClass, methodName, requireStatic, arguments);
+            }
+            byName.put(methodName, candidates);
+        }
+
+        ResolvedMethod best = null;
+        for (MethodCandidate candidate : candidates) {
+            try {
+                Object[] projectedArgs = projectMethodArgs(arguments, candidate.parameterTypes, candidate.varArgs);
+                if (projectedArgs == null) continue;
+
+                int score = scoreMethodArguments(arguments, candidate.parameterTypes, candidate.varArgs);
+                if (score >= METHOD_SCORE_IMPOSSIBLE) continue;
+
+                score += candidate.classDepth * 10;
+                if (candidate.varArgs) score += 25;
+
+                if (best == null || score < best.score) {
+                    best = new ResolvedMethod(candidate.method, candidate.parameterTypes, projectedArgs, score);
+                }
+            } catch (Throwable inner) {
+                inner.printStackTrace();
+            }
+        }
+        return best;
+    }
+
+    private static final class MethodCandidate {
+        final Object method;
+        final Class<?>[] parameterTypes;
+        final boolean varArgs;
+        final int classDepth;
+
+        private MethodCandidate(Object method, Class<?>[] parameterTypes, boolean varArgs, int classDepth) {
+            this.method = method;
+            this.parameterTypes = parameterTypes;
+            this.varArgs = varArgs;
+            this.classDepth = classDepth;
+        }
+    }
+
+    private static final ConcurrentHashMap<Class<?>, ConcurrentHashMap<String, MethodCandidate[]>> methodCandidateCache = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<Class<?>, ConcurrentHashMap<String, MethodCandidate[]>> staticMethodCandidateCache = new ConcurrentHashMap<>();
+
+    private static MethodCandidate[] findMethodCandidates(Class<?> startClass, String methodName, boolean requireStatic) throws Throwable {
+        List<MethodCandidate> found = new ArrayList<>();
+        Class<?> currentClass = startClass;
+        int classDepth = 0;
+        while (currentClass != null) {
+            for (Object method : currentClass.getDeclaredMethods()) {
+                if (!methodName.equals(getMethodNameHandle.invoke(method))) continue;
+                int modifiers = (int) getModifiersHandle.invoke(method);
+                if (requireStatic != ((modifiers & MODIFIER_STATIC) != 0)) continue;
+                found.add(new MethodCandidate(method, (Class<?>[]) getParameterTypesHandle.invoke(method),
+                        (boolean) isMethodVarArgsHandle.invoke(method), classDepth));
+            }
+            currentClass = currentClass.getSuperclass();
+            classDepth++;
+        }
+        return found.toArray(new MethodCandidate[0]);
+    }
+
+    private static ResolvedMethod scanForBestMethod(Class<?> startClass, String methodName, boolean requireStatic, Object... arguments) {
         ResolvedMethod best = null;
         Class<?> currentClass = startClass;
         int classDepth = 0;
